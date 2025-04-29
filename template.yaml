@@ -244,6 +244,7 @@ Resources:
       Role: !GetAtt SLABaseLambdaExecutionRole.Arn
       Layers:
         - !Ref SLAPowertoolsLayer
+      # EventBridge Scheduler ($1 per million invocations). Supports UTC, retry, and dead-letter queue.
       Events:
         EveryWeekAtMonday:
           Type: ScheduleV2
@@ -253,6 +254,12 @@ Resources:
             ScheduleExpressionTimezone: UTC
           RetryPolicy:
             MaximumRetryAttempts: 3
+      # Alternative Schedule using CloudWatch Events (free tier). Only simple cron expressions are supported.
+      # Events:
+      #   Schedule:
+      #     Type: Schedule
+      #     Properties:
+      #       Schedule: cron(0 0 ? * 1 *)
 
   SLAScheduledFunctionLogGroup:
     Type: AWS::Logs::LogGroup
