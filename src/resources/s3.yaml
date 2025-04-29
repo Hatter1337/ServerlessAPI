@@ -1,0 +1,25 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  CloudFormation template for Serverless resources: S3 Buckets
+
+Parameters:
+  Env:
+    Description: Deploying environment
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - prod
+
+Resources:
+  RootSAMDeployS3Bucket:
+    Type: "AWS::S3::Bucket"
+    Properties:
+      BucketName: !Sub "sam-deploy-${AWS::AccountId}-${AWS::Region}-${Env}"
+      LifecycleConfiguration:
+        # Rule to delete outdated deployment files after 30 days
+        Rules:
+          - Id: DeleteOldFiles
+            Status: Enabled
+            ExpirationInDays: 30
+            NoncurrentVersionExpirationInDays: 30

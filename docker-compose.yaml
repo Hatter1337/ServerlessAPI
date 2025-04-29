@@ -1,0 +1,12 @@
+services:
+  sam:
+    image: public.ecr.aws/sam/build-python3.13:1.112.0-20240313001228
+    container_name: serverless-api-local
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:$PWD
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ~/.aws/:/root/.aws:ro
+    working_dir: $PWD
+    entrypoint: ["/bin/sh", "-c", "./run-local-api.sh"]

@@ -1,0 +1,280 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  SAM Template for Serverless API(s)
+
+Parameters:
+  Env:
+    Description: Deploying environment
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - prod
+  CORSOrigin:
+    Description: CORS Allowed Origin
+    Type: String
+
+Conditions:
+  IsProductionEnvCondition: !Equals [!Ref Env, "prod"]
+
+Mappings:
+  EnvSettings:
+    dev:
+      LogRetentionInDays: 14 # 2 weeks
+    prod:
+      LogRetentionInDays: 90 # 3 months
+
+Globals:
+  Api:
+    OpenApiVersion: 3.0.1
+  Function:
+    Runtime: python3.13
+    MemorySize: 128
+    Timeout: 15
+    Architectures:
+      - x86_64
+    Environment:
+      Variables:
+        ENVIRONMENT: !Ref Env
+        REGION: !Sub ${AWS::Region}
+        CORS_ORIGIN: !Ref CORSOrigin
+
+Resources:
+  # --------------------------------------------------------------------------------- Lambda Layers
+  SLAPowertoolsLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: sla-powertools-layer
+      Description: "Lambda Layer with Powertools developer toolkit"
+      ContentUri: src/layers/powertools_layer/
+      CompatibleRuntimes:
+        - python3.13
+      RetentionPolicy: Retain
+    Metadata:
+      BuildMethod: python3.13
+
+  # --------------------------------------------------------------------- Service APIs (ApiGateway)
+  ApiGatewayAccount:
+    Type: AWS::ApiGateway::Account
+    Properties:
+      CloudWatchRoleArn: !GetAtt ApiGatewayLoggingRole.Arn
+
+  ApiGatewayLoggingRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: apigateway.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs
+
+  # Serverless API Gateway
+  ServerlessApiOne:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub "Serverless-API-One-${Env}"
+      StageName: !If [IsProductionEnvCondition, "api", !Sub "${Env}-api"]
+      Cors:
+        AllowMethods: "'OPTIONS,GET,POST,PUT,PATCH,DELETE'"
+        AllowHeaders: "'Content-Type,Content-Language,Accept,Accept-Language,Accept-Encoding,Range,Origin,Cookie'"
+        AllowOrigin: !Ref CORSOrigin
+        AllowCredentials: true
+      CacheClusterEnabled: false
+      Auth:
+        DefaultAuthorizer: LambdaAuthorizerOne
+        Authorizers:
+          LambdaAuthorizerOne:
+            FunctionPayloadType: REQUEST
+            FunctionArn: !GetAtt SlaOneAuthorizerFunction.Arn
+            Identity:
+              Headers:
+                - Authorization
+        UsagePlan:
+          CreateUsagePlan: PER_API
+          UsagePlanName:
+            !Join ["", [{ "Ref": "AWS::StackName" }, "-usage-plan"]]
+          Quota:
+            Limit: 10000
+            Period: WEEK
+
+  ServerlessApiOneLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/apigateway/${ServerlessApiOne}"
+      RetentionInDays: !FindInMap [EnvSettings, !Ref Env, LogRetentionInDays]
+
+  # HTTP API Gateway
+  ServerlessApiTwo:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      Name: !Sub "Serverless-API-Two-${Env}"
+      StageName: !If [IsProductionEnvCondition, "api", !Sub "${Env}-api"]
+      CorsConfiguration:
+        AllowMethods:
+          - GET
+          - POST
+          - PUT
+          - PATCH
+          - DELETE
+          - OPTIONS
+        AllowHeaders:
+          - Content-Type
+          - Authorization
+          - Accept
+          - Accept-Language
+          - Origin
+          - Cookie
+        AllowOrigins:
+          - "*"  # TODO: use !Ref CORSOrigin; fix: Invalid format for origin ...
+        AllowCredentials: false
+      Auth:
+        DefaultAuthorizer: LambdaAuthorizerTwo
+        Authorizers:
+          LambdaAuthorizerTwo:
+            AuthorizationType: CUSTOM
+            AuthorizerPayloadFormatVersion: 2.0
+            EnableSimpleResponses: true
+            FunctionArn: !GetAtt SlaTwoAuthorizerFunction.Arn
+
+  ServerlessApiTwoLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/apigateway/${ServerlessApiTwo}"
+      RetentionInDays: !FindInMap [EnvSettings, !Ref Env, LogRetentionInDays]
+
+  # -------------------------------------------------------------------------------- Lambda Role(s)
+  SLABaseLambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "sla-base-lambda-execution-role-${Env}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  # ----------------------------------------------------------- Lambda authorizer
+  SlaOneAuthorizerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "sla-one-authorizer-fn-${Env}"
+      CodeUri: src/lambda/functions/authorizer/
+      Handler: one.lambda_handler
+      Role: !GetAtt SLABaseLambdaExecutionRole.Arn
+
+  SlaOneAuthorizerFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/sla-one-authorizer-fn-${Env}"
+      RetentionInDays: !FindInMap [EnvSettings, !Ref Env, LogRetentionInDays]
+
+  SlaTwoAuthorizerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "sla-two-authorizer-fn-${Env}"
+      CodeUri: src/lambda/functions/authorizer/
+      Handler: two.lambda_handler
+      Role: !GetAtt SLABaseLambdaExecutionRole.Arn
+
+  SlaTwoAuthorizerFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/sla-two-authorizer-fn-${Env}"
+      RetentionInDays: !FindInMap [EnvSettings, !Ref Env, LogRetentionInDays]
+
+  # --------------------------------------------------------------- Lambda functions
+  SlaOneSecretFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "sla-one-secret-fn-${Env}"
+      CodeUri: src/lambda/functions/secret/
+      Handler: one.lambda_handler
+      Role: !GetAtt SLABaseLambdaExecutionRole.Arn
+      Events:
+        SecretEndpoint:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ServerlessApiOne
+            Path: /v1/secret
+            Method: GET
+
+  SlaOneSecretFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/sla-one-secret-fn-${Env}"
+      RetentionInDays: !FindInMap [EnvSettings, !Ref Env, LogRetentionInDays]
+
+  SlaTwoSecretFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "sla-two-secret-fn-${Env}"
+      CodeUri: src/lambda/functions/secret/
+      Handler: two.lambda_handler
+      Role: !GetAtt SLABaseLambdaExecutionRole.Arn
+      Events:
+        SecretEndpoint:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ServerlessApiTwo
+            Path: /v1/secret
+            Method: GET
+
+  SlaTwoSecretFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/sla-two-secret-fn-${Env}"
+      RetentionInDays: !FindInMap [EnvSettings, !Ref Env, LogRetentionInDays]
+
+  SLAScheduledFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "sla-scheduled-fn-${Env}"
+      CodeUri: src/lambda/functions/schedule/
+      Handler: demo.lambda_handler
+      Role: !GetAtt SLABaseLambdaExecutionRole.Arn
+      Layers:
+        - !Ref SLAPowertoolsLayer
+      Events:
+        EveryWeekAtMonday:
+          Type: ScheduleV2
+          Properties:
+            Name: !Sub "sla-schedule-every-week-at-monday-${Env}"
+            ScheduleExpression: cron(0 0 ? * 1 *)
+            ScheduleExpressionTimezone: UTC
+          RetryPolicy:
+            MaximumRetryAttempts: 3
+
+  SLAScheduledFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/sla-scheduled-fn-${Env}"
+      RetentionInDays: !FindInMap [EnvSettings, !Ref Env, LogRetentionInDays]
+
+Outputs:
+  ServerlessApiOneUrlOutput:
+    Description: "URL of the Serverless API #1"
+    Value: !If
+      - IsProductionEnvCondition
+      - !Sub "https://${ServerlessApiOne}.execute-api.${AWS::Region}.amazonaws.com/api/v1/"
+      - !Sub "https://${ServerlessApiOne}.execute-api.${AWS::Region}.amazonaws.com/${Env}-api/v1/"
+
+  ServerlessApiTwoUrlOutput:
+    Description: "URL of the Serverless API #2"
+    Value: !If
+      - IsProductionEnvCondition
+      - !Sub "https://${ServerlessApiTwo}.execute-api.${AWS::Region}.amazonaws.com/api/v1/"
+      - !Sub "https://${ServerlessApiTwo}.execute-api.${AWS::Region}.amazonaws.com/${Env}-api/v1/"
+
+  SLAPowertoolsLayerOutput:
+    Description: "ARN for Serverless API Powertools Layer"
+    Value: !Ref SLAPowertoolsLayer
