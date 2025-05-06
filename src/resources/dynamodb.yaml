@@ -1,0 +1,93 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  CloudFormation template for DynamoDB tables
+
+Parameters:
+  Env:
+    Description: Deploying environment
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - test
+      - prod
+#  VpcId:
+#    Type: String
+#    Description: The ID of the VPC
+#  RouteTableIds:
+#    Type: List<String>
+#    Description: The list of Route Table IDs
+
+Conditions:
+  IsProductionEnv: !Equals [!Ref Env, "prod"]
+
+Resources:
+  # TODO: Use VPCEndpoint & VPC for better security
+  # --------------------------------------------------------------------- VPC Endpoint for DynamoDB
+  # DynamoDBEndpoint:
+  #   Type: "AWS::EC2::VPCEndpoint"
+  #   Properties:
+  #     ServiceName: !Sub "com.amazonaws.${AWS::Region}.dynamodb"
+  #     VpcId: !Ref VpcId
+  #    VpcEndpointType: "Gateway"
+  #    RouteTableIds: !Ref RouteTableIds
+
+  # ------------------------------------------------------------------------------- DynamoDB tables
+  UserTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "sla-user-${Env}"
+      DeletionProtectionEnabled: true
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+        - AttributeName: email
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id # Partition Key
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: email_index
+          KeySchema:
+            - AttributeName: email
+              KeyType: HASH
+            - AttributeName: id
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+          ProvisionedThroughput: !If
+            - IsProductionEnv
+            - !Ref "AWS::NoValue"
+            - ReadCapacityUnits: 1
+              WriteCapacityUnits: 1
+      BillingMode: !If [IsProductionEnv, PAY_PER_REQUEST, PROVISIONED]
+      ProvisionedThroughput: !If
+        - IsProductionEnv
+        - !Ref "AWS::NoValue"
+        - ReadCapacityUnits: 1
+          WriteCapacityUnits: 1
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: !If [IsProductionEnv, true, false]
+
+  EmailRateLimiterTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "sla-email-rate-limiter-${Env}"
+      DeletionProtectionEnabled: true
+      AttributeDefinitions:
+        - AttributeName: email
+          AttributeType: S
+      KeySchema:
+        - AttributeName: email # Partition Key
+          KeyType: HASH
+      BillingMode: !If [IsProductionEnv, PAY_PER_REQUEST, PROVISIONED]
+      ProvisionedThroughput: !If
+        - IsProductionEnv
+        - !Ref "AWS::NoValue"
+        - ReadCapacityUnits: 1
+          WriteCapacityUnits: 1
+      TimeToLiveSpecification: # Enables automatic deletion of expired items
+        AttributeName: ttl # field name for TTL attribute; must be epoch timestamp in seconds
+        Enabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: false

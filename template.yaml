@@ -54,6 +54,18 @@ Resources:
     Metadata:
       BuildMethod: python3.13
 
+  SLAAuthLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: sla-auth-layer
+      Description: "Lambda Layer for Auth tools"
+      ContentUri: src/layers/auth_layer/
+      CompatibleRuntimes:
+        - python3.13
+      RetentionPolicy: Retain
+    Metadata:
+      BuildMethod: python3.13
+
   # --------------------------------------------------------------------- Service APIs (ApiGateway)
   ApiGatewayAccount:
     Type: AWS::ApiGateway::Account
@@ -73,11 +85,10 @@ Resources:
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs
 
-  # Serverless API Gateway
-  ServerlessApiOne:
+  ServerlessApi:
     Type: AWS::Serverless::Api
     Properties:
-      Name: !Sub "Serverless-API-One-${Env}"
+      Name: !Sub "Serverless-API-${Env}"
       StageName: !If [IsProductionEnvCondition, "api", !Sub "${Env}-api"]
       Cors:
         AllowMethods: "'OPTIONS,GET,POST,PUT,PATCH,DELETE'"
@@ -86,14 +97,24 @@ Resources:
         AllowCredentials: true
       CacheClusterEnabled: false
       Auth:
-        DefaultAuthorizer: LambdaAuthorizerOne
-        Authorizers:
-          LambdaAuthorizerOne:
-            FunctionPayloadType: REQUEST
-            FunctionArn: !GetAtt SlaOneAuthorizerFunction.Arn
-            Identity:
-              Headers:
-                - Authorization
+        # --- Authorization using Cognito User Pool
+        # DefaultAuthorizer: CognitoAuthorizer
+        # Authorizers:
+        #   CognitoAuthorizer:
+        #     UserPoolArn: !GetAtt MyCognitoUserPool.Arn
+        #     Identity:
+        #       Header: Authorization # Bearer <token>
+
+        # --- Authorization using custom Lambda authorizer
+        # DefaultAuthorizer: LambdaAuthorizer
+        # Authorizers:
+        #   LambdaAuthorizer:
+        #    FunctionPayloadType: REQUEST
+        #    FunctionArn: !GetAtt CustomAuthorizerFunction.Arn
+        #    Identity:
+        #      Headers:
+        #        - Authorization
+
         UsagePlan:
           CreateUsagePlan: PER_API
           UsagePlanName:
@@ -102,49 +123,10 @@ Resources:
             Limit: 10000
             Period: WEEK
 
-  ServerlessApiOneLogGroup:
+  ServerlessApiLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Sub "/aws/apigateway/${ServerlessApiOne}"
-      RetentionInDays: !FindInMap [EnvSettings, !Ref Env, LogRetentionInDays]
-
-  # HTTP API Gateway
-  ServerlessApiTwo:
-    Type: AWS::Serverless::HttpApi
-    Properties:
-      Name: !Sub "Serverless-API-Two-${Env}"
-      StageName: !If [IsProductionEnvCondition, "api", !Sub "${Env}-api"]
-      CorsConfiguration:
-        AllowMethods:
-          - GET
-          - POST
-          - PUT
-          - PATCH
-          - DELETE
-          - OPTIONS
-        AllowHeaders:
-          - Content-Type
-          - Authorization
-          - Accept
-          - Accept-Language
-          - Origin
-          - Cookie
-        AllowOrigins:
-          - "*"  # TODO: use !Ref CORSOrigin; fix: Invalid format for origin ...
-        AllowCredentials: false
-      Auth:
-        DefaultAuthorizer: LambdaAuthorizerTwo
-        Authorizers:
-          LambdaAuthorizerTwo:
-            AuthorizationType: CUSTOM
-            AuthorizerPayloadFormatVersion: 2.0
-            EnableSimpleResponses: true
-            FunctionArn: !GetAtt SlaTwoAuthorizerFunction.Arn
-
-  ServerlessApiTwoLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: !Sub "/aws/apigateway/${ServerlessApiTwo}"
+      LogGroupName: !Sub "/aws/apigateway/${ServerlessApi}"
       RetentionInDays: !FindInMap [EnvSettings, !Ref Env, LogRetentionInDays]
 
   # -------------------------------------------------------------------------------- Lambda Role(s)
@@ -162,79 +144,226 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: SLADynamoDBAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # Access to DynamoDB table 'demo-table-<Env>'
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                Resource:
+                  - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/sla-*-${Env}"
+                  - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/sla-*-${Env}/index/*"
+              # Access to SSM parameters and KMS decryption
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                  - ssm:GetParametersByPath
+                  - kms:Decrypt
+                Resource:
+                  - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Env}/*"
+                  - !Sub "arn:aws:kms:${AWS::Region}:${AWS::AccountId}:key/*"
+              # Allow invoking other Lambda functions
+              - Effect: Allow
+                Action:
+                  - "lambda:InvokeFunction"
+                Resource:
+                  - !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:*"
 
   # ----------------------------------------------------------- Lambda authorizer
-  SlaOneAuthorizerFunction:
+  CustomAuthorizerFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub "sla-one-authorizer-fn-${Env}"
+      FunctionName: !Sub "sla-authorizer-fn-${Env}"
       CodeUri: src/lambda/functions/authorizer/
-      Handler: one.lambda_handler
+      Handler: app.lambda_handler
       Role: !GetAtt SLABaseLambdaExecutionRole.Arn
 
-  SlaOneAuthorizerFunctionLogGroup:
+  CustomAuthorizerFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Sub "/aws/lambda/sla-one-authorizer-fn-${Env}"
+      LogGroupName: !Sub "/aws/lambda/sla-authorizer-fn-${Env}"
       RetentionInDays: !FindInMap [EnvSettings, !Ref Env, LogRetentionInDays]
 
-  SlaTwoAuthorizerFunction:
+  # --------------------------------------------------------------- Lambda functions - Auth
+  SLAAuthFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub "sla-two-authorizer-fn-${Env}"
-      CodeUri: src/lambda/functions/authorizer/
-      Handler: two.lambda_handler
+      FunctionName: !Sub "sla-auth-fn-${Env}"
+      CodeUri: src/lambda/functions/api/auth/base/
+      Handler: app.lambda_handler
       Role: !GetAtt SLABaseLambdaExecutionRole.Arn
+      Layers:
+        - !Ref SLAPowertoolsLayer
+        - !Ref SLAAuthLayer
+      # AutoPublishAlias: live
+      # ProvisionedConcurrencyConfig:
+      #   ProvisionedConcurrentExecutions: !If [IsProductionEnvCondition, 2, 1]
+      Events:
+        Session:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ServerlessApi
+            Path: /v1/auth/session
+            Method: POST
+            Auth:
+              ApiKeyRequired: true
+        CredsSignUp:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ServerlessApi
+            Path: /v1/auth/creds/sign_up
+            Method: POST
+        CredsLogIn:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ServerlessApi
+            Path: /v1/auth/creds/log_in
+            Method: POST
+        SSOSignUp:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ServerlessApi
+            Path: /v1/auth/sso/{provider}/sign_up
+            Method: POST
+            Auth:
+              ApiKeyRequired: true
+        SSOLogIn:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ServerlessApi
+            Path: /v1/auth/sso/{provider}/log_in
+            Method: POST
+            Auth:
+              ApiKeyRequired: true
+      Environment:
+        Variables:
+          POWERTOOLS_PARAMETERS_MAX_AGE: 900
 
-  SlaTwoAuthorizerFunctionLogGroup:
+  SLAAuthFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Sub "/aws/lambda/sla-two-authorizer-fn-${Env}"
-      RetentionInDays: !FindInMap [EnvSettings, !Ref Env, LogRetentionInDays]
+      LogGroupName: !Sub "/aws/lambda/sla-auth-fn-${Env}"
+      RetentionInDays: !FindInMap [ EnvSettings, !Ref Env, LogRetentionInDays ]
 
-  # --------------------------------------------------------------- Lambda functions
-  SlaOneSecretFunction:
+  SLAEmailVerificationFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub "sla-one-secret-fn-${Env}"
-      CodeUri: src/lambda/functions/secret/
-      Handler: one.lambda_handler
+      FunctionName: !Sub "sla-email-verification-fn-${Env}"
+      CodeUri: src/lambda/functions/api/auth/email_verification/
+      Handler: app.lambda_handler
       Role: !GetAtt SLABaseLambdaExecutionRole.Arn
+      Layers:
+        - !Ref SLAPowertoolsLayer
+        - !Ref SLAAuthLayer
+      Events:
+        SendVerificationEmail:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ServerlessApi
+            Path: /v1/auth/creds/email/send_verification
+            Method: POST
+            Auth:
+              ApiKeyRequired: true
+        ConfirmEmail:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ServerlessApi
+            Path: /v1/auth/creds/email/confirm
+            Method: POST
+
+  SLAEmailVerificationFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/sla-email-verification-fn-${Env}"
+      RetentionInDays: !FindInMap [EnvSettings, !Ref Env, LogRetentionInDays]
+
+  SLAPasswordManagerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "sla-password-manager-fn-${Env}"
+      CodeUri: src/lambda/functions/api/auth/password_manager/
+      Handler: app.lambda_handler
+      Role: !GetAtt SLABaseLambdaExecutionRole.Arn
+      Layers:
+        - !Ref SLAPowertoolsLayer
+        - !Ref SLAAuthLayer
+      Events:
+        PasswordReset:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ServerlessApi
+            Path: /v1/auth/creds/password/reset
+            Method: POST
+        PasswordSet:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ServerlessApi
+            Path: /v1/auth/creds/password/set
+            Method: POST
+        PasswordChange:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ServerlessApi
+            Path: /v1/auth/creds/password/change
+            Method: POST
+        PasswordCreate:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ServerlessApi
+            Path: /v1/auth/creds/password/create
+            Method: POST
+        PasswordConfirm:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ServerlessApi
+            Path: /v1/auth/creds/password/confirm
+            Method: POST
+            Auth:
+              ApiKeyRequired: true
+
+  SLAPasswordManagerFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/sla-password-manager-fn-${Env}"
+      RetentionInDays: !FindInMap [EnvSettings, !Ref Env, LogRetentionInDays]
+
+  # --------------------------------------------------------------- Lambda functions - User
+  SlaUserFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "sla-user-fn-${Env}"
+      CodeUri: src/lambda/functions/api/user/
+      Handler: app.lambda_handler
+      Role: !GetAtt SLABaseLambdaExecutionRole.Arn
+      Layers:
+        - !Ref SLAPowertoolsLayer
+        - !Ref SLAAuthLayer
       Events:
         SecretEndpoint:
           Type: Api
           Properties:
-            RestApiId: !Ref ServerlessApiOne
-            Path: /v1/secret
+            RestApiId: !Ref ServerlessApi
+            Path: /v1/user
             Method: GET
+            Auth:
+              ApiKeyRequired: true
 
-  SlaOneSecretFunctionLogGroup:
+  SlaUserFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Sub "/aws/lambda/sla-one-secret-fn-${Env}"
+      LogGroupName: !Sub "/aws/lambda/sla-user-fn-${Env}"
       RetentionInDays: !FindInMap [EnvSettings, !Ref Env, LogRetentionInDays]
 
-  SlaTwoSecretFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      FunctionName: !Sub "sla-two-secret-fn-${Env}"
-      CodeUri: src/lambda/functions/secret/
-      Handler: two.lambda_handler
-      Role: !GetAtt SLABaseLambdaExecutionRole.Arn
-      Events:
-        SecretEndpoint:
-          Type: HttpApi
-          Properties:
-            ApiId: !Ref ServerlessApiTwo
-            Path: /v1/secret
-            Method: GET
-
-  SlaTwoSecretFunctionLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: !Sub "/aws/lambda/sla-two-secret-fn-${Env}"
-      RetentionInDays: !FindInMap [EnvSettings, !Ref Env, LogRetentionInDays]
-
+  # --------------------------------------------------------------- Lambda functions - Scheduled
   SLAScheduledFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -244,22 +373,15 @@ Resources:
       Role: !GetAtt SLABaseLambdaExecutionRole.Arn
       Layers:
         - !Ref SLAPowertoolsLayer
-      # EventBridge Scheduler ($1 per million invocations). Supports UTC, retry, and dead-letter queue.
       Events:
         EveryWeekAtMonday:
-          Type: ScheduleV2
+          Type: ScheduleV2  # EventBridge Scheduler
           Properties:
             Name: !Sub "sla-schedule-every-week-at-monday-${Env}"
-            ScheduleExpression: cron(0 0 ? * 1 *)
+            ScheduleExpression: cron(0 0 ? * 1 *) # Every Monday at 00:00 UTC
             ScheduleExpressionTimezone: UTC
           RetryPolicy:
             MaximumRetryAttempts: 3
-      # Alternative Schedule using CloudWatch Events (free tier). Only simple cron expressions are supported.
-      # Events:
-      #   Schedule:
-      #     Type: Schedule
-      #     Properties:
-      #       Schedule: cron(0 0 ? * 1 *)
 
   SLAScheduledFunctionLogGroup:
     Type: AWS::Logs::LogGroup
@@ -268,20 +390,17 @@ Resources:
       RetentionInDays: !FindInMap [EnvSettings, !Ref Env, LogRetentionInDays]
 
 Outputs:
-  ServerlessApiOneUrlOutput:
+  ServerlessApiUrlOutput:
     Description: "URL of the Serverless API #1"
     Value: !If
       - IsProductionEnvCondition
-      - !Sub "https://${ServerlessApiOne}.execute-api.${AWS::Region}.amazonaws.com/api/v1/"
-      - !Sub "https://${ServerlessApiOne}.execute-api.${AWS::Region}.amazonaws.com/${Env}-api/v1/"
-
-  ServerlessApiTwoUrlOutput:
-    Description: "URL of the Serverless API #2"
-    Value: !If
-      - IsProductionEnvCondition
-      - !Sub "https://${ServerlessApiTwo}.execute-api.${AWS::Region}.amazonaws.com/api/v1/"
-      - !Sub "https://${ServerlessApiTwo}.execute-api.${AWS::Region}.amazonaws.com/${Env}-api/v1/"
+      - !Sub "https://${ServerlessApi}.execute-api.${AWS::Region}.amazonaws.com/api/v1/"
+      - !Sub "https://${ServerlessApi}.execute-api.${AWS::Region}.amazonaws.com/${Env}-api/v1/"
 
   SLAPowertoolsLayerOutput:
-    Description: "ARN for Serverless API Powertools Layer"
+    Description: "ARN for Powertools Lambda Layer"
     Value: !Ref SLAPowertoolsLayer
+
+  SLAAuthLayerOutput:
+    Description: "ARN for Auth Lambda Layer"
+    Value: !Ref SLAAuthLayer

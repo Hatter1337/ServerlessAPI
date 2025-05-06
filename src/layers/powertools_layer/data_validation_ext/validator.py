@@ -2,8 +2,10 @@ from typing import ClassVar
 
 from pydantic import EmailStr, SecretStr, field_validator
 
+from env_config_ext import env_config
 
-def unify_email(email: str) -> str:
+
+def unify_email(email):
     """
     Unify an email address by removing substrings after '+' in the local part.
     This approach is more general and doesn't focus on specific domain rules.
@@ -33,13 +35,15 @@ class EmailValidator:
     @field_validator("email")  # noqa
     @classmethod
     def unify_email_address(cls, email: EmailStr) -> str:
-        return unify_email(str(email))
+        if env_config["ENVIRONMENT"] != "dev":
+            return unify_email(email)
+        return email
 
 
 class PasswordValidator:
     _password_min_length: ClassVar[int] = 8
 
-    @field_validator("password")
+    @field_validator("password")  # noqa
     @classmethod
     def validate_password(cls, password: SecretStr):
         value = password.get_secret_value()

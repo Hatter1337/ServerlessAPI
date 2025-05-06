@@ -1,0 +1,57 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  CloudFormation template for creating a free-tier EC2 instance in a public subnet.
+
+Parameters:
+  InstanceType:
+    Description: EC2 instance type
+    Type: String
+    Default: t3.micro
+    AllowedValues:
+      - t2.micro
+      - t3.micro
+  KeyName:
+    Description: Name of an existing EC2 KeyPair to enable SSH access
+    Type: AWS::EC2::KeyPair::KeyName
+
+  PublicSubnetId:
+    Description: The ID of the public subnet to launch the instance into
+    Type: AWS::EC2::Subnet::Id
+
+  VpcId:
+    Description: VPC ID where the instance will be deployed
+    Type: AWS::EC2::VPC::Id
+
+  EC2SecurityGroupId:
+    Description: Security Group ID for the EC2 instance
+    Type: AWS::EC2::SecurityGroup::Id
+
+Mappings:
+  RegionMap:
+    eu-west-1:
+      AMI: ami-0615f8fb30852b961
+    us-west-1:
+      AMI: ami-08be293cd057c7a9d
+
+Resources:
+  EC2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref KeyName
+      ImageId: !FindInMap [RegionMap, !Ref "AWS::Region", AMI]
+      SubnetId: !Ref PublicSubnetId
+      SecurityGroupIds:
+        - !Ref EC2SecurityGroupId
+      Tags:
+        - Key: Name
+          Value: MyApp-EC2Instance
+
+Outputs:
+  InstanceId:
+    Description: ID of the EC2 instance
+    Value: !Ref EC2Instance
+
+  PublicIP:
+    Description: Public IP address of the EC2 instance
+    Value: !GetAtt EC2Instance.PublicIp

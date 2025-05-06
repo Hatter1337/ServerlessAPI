@@ -1,0 +1,81 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  CloudFormation template for creating an Amazon RDS PostgreSQL instance.
+
+Parameters:
+  DBInstanceIdentifier:
+    Description: Unique identifier for the RDS instance
+    Type: String
+    Default: myapp-postgres-dev
+
+  DBName:
+    Description: Name of the initial database to create
+    Type: String
+    Default: myappdb
+
+  MasterUsername:
+    Description: Master username
+    Type: String
+    Default: masteruser
+
+  MasterUserPassword:
+    Description: Master user password
+    Type: String
+    NoEcho: true
+
+  VpcId:
+    Description: VPC ID where the instance will be deployed
+    Type: AWS::EC2::VPC::Id
+
+  PublicSubnet1Id:
+    Description: ID of the first public subnet
+    Type: AWS::EC2::Subnet::Id
+
+  PublicSubnet2Id:
+    Description: ID of the second public subnet
+    Type: AWS::EC2::Subnet::Id
+
+  RDSSecurityGroupId:
+    Description: Security Group ID for the RDS instance
+    Type: AWS::EC2::SecurityGroup::Id
+
+Resources:
+
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: "Subnet group for RDS instance"
+      SubnetIds:
+        - !Ref PublicSubnet1Id
+        - !Ref PublicSubnet2Id
+      Tags:
+        - Key: Name
+          Value: myapp-db-subnet-group
+
+  RDSInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBInstanceIdentifier: !Ref DBInstanceIdentifier
+      AllocatedStorage: 20
+      DBInstanceClass: db.t3.micro
+      Engine: postgres
+      MasterUsername: !Ref MasterUsername
+      MasterUserPassword: !Ref MasterUserPassword
+      DBName: !Ref DBName
+      VPCSecurityGroups:
+        - !Ref RDSSecurityGroupId
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      PubliclyAccessible: true
+      BackupRetentionPeriod: 0
+      DeletionProtection: false
+      MultiAZ: false
+      StorageType: gp2
+
+Outputs:
+  RDSInstanceEndpoint:
+    Description: "RDS Endpoint"
+    Value: !GetAtt RDSInstance.Endpoint.Address
+
+  RDSInstancePort:
+    Description: "RDS Port"
+    Value: !GetAtt RDSInstance.Endpoint.Port

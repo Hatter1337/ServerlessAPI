@@ -8,7 +8,6 @@ region = "eu-west-1"
 warm_containers = "EAGER"
 parameter_overrides = [
     "Env=dev",
-    "IsLocalEnv=true",
     "CORSOrigin=\"'http://localhost:3000'\""
 ]
 

@@ -17,7 +17,7 @@ def validation_error_description(exc: RequestValidationError):
     error_description = {}
 
     for error in exc.errors():
-        # Creating a string representation of the location (path) of each error in the request
+        # Generating a dot-separated string representing the path to each error in the request
         field = ".".join([str(elem) for elem in error["loc"]])
         # Mapping the error location to its message
         error_description[field] = error["msg"]
