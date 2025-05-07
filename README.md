@@ -53,6 +53,8 @@ Follow the instructions in `src/resources/README.md` to deploy the necessary res
 Once the resources are created, deploy the application.
 
 ### Deploy the application
+> **Note:** You should change `{YourAWSAccountId}` in `samconfig.toml` to your AWS account ID.
+
 After the initial setup:
 ```bash
 sam build --profile myapp-dev
