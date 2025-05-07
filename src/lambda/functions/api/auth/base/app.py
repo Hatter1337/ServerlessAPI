@@ -1,7 +1,6 @@
 import time
 import json
 import boto3
-import bcrypt
 from uuid import uuid4
 from typing import Optional
 
@@ -23,6 +22,7 @@ from pydantic import BaseModel, SecretStr, EmailStr, ValidationError
 # Layer dependencies
 from resource_ext import exceptions
 from env_config_ext import env_config
+from auth_ext.pwd_hasher import PasswordHasher
 from auth_ext.jwt_authenticator import JWTAuthenticator
 from data_validation_ext import ExceptionHandlers, PasswordValidator, EmailValidator
 from auth_ext.utils import (
@@ -54,12 +54,10 @@ db_user_table = resource.Table(f"sla-user-{env_config['ENVIRONMENT']}")
 lambda_client = boto3.client("lambda", region_name=env_config["REGION"])
 
 # Define JWT Authenticator
-# jwt_encryption_key = parameters.get_parameter(
+# jwt_encryption_key = parameters.get_parameter(  # TODO: Use Parameter Store
 #     f"/{env_config['ENVIRONMENT']}/auth/creds/jwt-encryption-key", decrypt=True
 # )
-jwt_authenticator = JWTAuthenticator(
-    secret_key=env_config["JWT_ENCRYPTION_KEY"], logger=logger
-)
+jwt_authenticator = JWTAuthenticator(secret_key=env_config["JWT_ENCRYPTION_KEY"], logger=logger)
 
 # Google client credentials
 google_client_config_str = parameters.get_parameter(
@@ -72,6 +70,9 @@ github_client_config_str = parameters.get_parameter(
     f"/{env_config['ENVIRONMENT']}/auth/github/client-config", decrypt=True
 )
 github_client_config = json.loads(github_client_config_str)
+
+# Password hashing utility
+pwd_hasher = PasswordHasher()
 
 
 # --------------------------------------------------------------- Pydantic validation Models
@@ -91,9 +92,7 @@ class AuthCode(BaseModel):
 
 # --------------------------------------------------------------- Validation error handlers
 # 400 Bad Request
-@app.exception_handler(
-    [TypeError, RequestValidationError, ValidationError, ValidationException]
-)
+@app.exception_handler([TypeError, RequestValidationError, ValidationError, ValidationException])
 def handle_invalid_params_wrapper(exc: RequestValidationError):
     return exception_handlers.invalid_params(exc)
 
@@ -189,9 +188,8 @@ def creds_sign_up(creds: Credentials):
         "provider": "creds",
         "email": creds.email,
         "email_verified": True,  # TODO: Set to False for email verification
-        "password": bcrypt.hashpw(
-            creds.password.get_secret_value().encode(),
-            env_config["BCRYPT_SALT"].encode(),
+        "password": pwd_hasher.hash_password(
+            password=creds.password.get_secret_value(), salt=env_config["PWD_SALT"]
         ),
         "password_verified": True,
         "created_at": created_at,
@@ -199,7 +197,7 @@ def creds_sign_up(creds: Credentials):
     }
     db_user_table.put_item(Item=user)
 
-    send_email_verification_async(email=creds.email)
+    # send_email_verification_async(email=creds.email)
     return Response(status_code=200)
 
 
@@ -213,8 +211,10 @@ def creds_log_in(creds: Credentials):
         raise exceptions.ResourceAuthorizationError
 
     # Check user password
-    password_matches = bcrypt.checkpw(
-        creds.password.get_secret_value().encode(), user["password"].value
+    password_matches = pwd_hasher.verify_password(
+        password=creds.password.get_secret_value(),
+        salt=env_config["PWD_SALT"],
+        hashed_password=user["password"],
     )
 
     if user.get("password_verified", False) is False or not password_matches:
@@ -240,7 +240,7 @@ def creds_log_in(creds: Credentials):
 def sso_sign_up(provider: str, auth: AuthCode):
     logger.info({"access_token": auth.code.get_secret_value()})
 
-    # Fetch user data from SSO provider using OAuth2
+    # Fetch user data from the SSO provider using OAuth2
     if provider == "google":
         access_token = google.exchange_google_code_for_token(
             code=auth.code.get_secret_value(),
@@ -249,9 +249,7 @@ def sso_sign_up(provider: str, auth: AuthCode):
             redirect_uri=f"{env_config['CORS_ORIGIN_URL']}/api/auth/callback/google?type=sign_up",
             logger=logger,
         )
-        user_info = google.get_google_user_info(
-            access_token=access_token, logger=logger
-        )
+        user_info = google.get_google_user_info(access_token=access_token, logger=logger)
     elif provider == "github":
         access_token = github.exchange_github_code_for_token(
             code=auth.code.get_secret_value(),
@@ -259,9 +257,7 @@ def sso_sign_up(provider: str, auth: AuthCode):
             client_secret=github_client_config["client_secret"],
             logger=logger,
         )
-        user_info = github.get_github_user_info(
-            access_token=access_token, logger=logger
-        )
+        user_info = github.get_github_user_info(access_token=access_token, logger=logger)
     else:
         raise ValidationException(
             errors=[
@@ -312,9 +308,7 @@ def sso_log_in(provider: str, auth: AuthCode):
             redirect_uri=f"{env_config['CORS_ORIGIN_URL']}/api/auth/callback/google?type=sign_in",
             logger=logger,
         )
-        user_info = google.get_google_user_info(
-            access_token=access_token, logger=logger
-        )
+        user_info = google.get_google_user_info(access_token=access_token, logger=logger)
     elif provider == "github":
         access_token = github.exchange_github_code_for_token(
             code=auth.code.get_secret_value(),
@@ -322,9 +316,7 @@ def sso_log_in(provider: str, auth: AuthCode):
             client_secret=github_client_config["client_secret"],
             logger=logger,
         )
-        user_info = github.get_github_user_info(
-            access_token=access_token, logger=logger
-        )
+        user_info = github.get_github_user_info(access_token=access_token, logger=logger)
     else:
         raise ValidationException(
             errors=[

@@ -4,7 +4,7 @@ import os
 REGION = os.environ.get("REGION", "eu-west-1")
 AWS_ACCOUNT_ID = os.environ.get("AWS_ACCOUNT_ID")
 ENVIRONMENT = os.environ.get("ENVIRONMENT", "dev")
-BCRYPT_SALT = "$2b$12$ehK5SEA6AANQOUII48Uaqu"  # TODO: Move to Secrets Manager / Parameter Store
+PWD_SALT = "ddYIRQ7u5HeB_eHvDTG0mA=="  # TODO: Move to Secrets Manager / Parameter Store
 JWT_ENCRYPTION_KEY = "ee90ec5b4254085d403fd299647a7e3a8e779cace3a20f6af91df444894a6949"  # TODO: Move to Secrets Manager / Parameter Store
 
 # CORS constants
